@@ -6,16 +6,40 @@ don't shadow function variable with for loop variable (or other similar shadowin
 '''
 
 '''
-note to self: during pre-flop stage, min-raise has some special cases. Try to figure these out. 
-'''
+To-do: (in sort-of priority order)
 
+Regarding workflow:
+Optimise testing process: perhaps hard-code some starting inputs (player names and stacks), 
+    and use card = Card.new('Qh') etc to force hands (A23456789TJQK, hdcs)
+    
+
+Critical:
+after each hand, must remove dead (stack = zero) players from players_dict (do this at the betting stage)
+check, bet (as kind-of calls and raises, except with different prompts, inputs, and remarks)
+implement all_in and side pots (has many consequences)
+    what if to call is larger or equal to stack? 
+    allow typing >= stack when asked to raise to signify all_in
+
+Important:
+tag for "last aggressor" determined on the river (for showdown priority)
+implement tyers
+note to self: during pre-flop stage, min-raise has some special cases. Try to figure these out. 
+
+stupid-proofing:
+max num players
+input checking (min raise etc)
+
+not-so-important:
+implement sit-out for the hand
+implement re-buy
+implement changing (increasing) blinds (like a tournament)
+'''
 
 from treys import Card
 from treys import Evaluator
 from treys import Deck
 
 players_dict = dict()
-#note to self: after each hand, must remove dead players from players_dict (do this at the betting stage)
 
 class Engine:
     def __init__(self, table, num_players):
@@ -59,6 +83,7 @@ class Engine:
 class Betting:
 
     deck = Deck()
+    evaluator = Evaluator()
     pot = None
     community = None
 
@@ -71,7 +96,6 @@ class Betting:
         self.minimum_bet = big_blind
         self.pot = 0
         # self.side_pots = [0]*len(players_dict) #probably a better structure for this
-        #previous_bet, to_match, minimum_bet
 
     def new_game(self, priority):
         if self.pre_flop(priority) == "finished":
@@ -82,7 +106,7 @@ class Betting:
             return
         if self.river(priority) == "finished":
             return
-        if self.showdown() == "finished": #note to self: We need a tag for "last aggressor" determined on the river
+        if self.showdown() == "finished":
             return
     # def remove_player(self, players, index_to_remove):
     #     del(players[index_to_remove])
@@ -95,23 +119,73 @@ class Betting:
 
     # def next_player_index(self, players, old_player_index):
 
+    def key_list_with_max_value(self, d):
+        k = list(d.keys())
+        v = list(d.values())
+        maximal_list = []
+        max_val = max(v)
+        for i in range(len(k)):
+            if v[i] == max_val:
+                maximal_list.append(k[i])
+        return maximal_list
+
+    def score_to_rank_string(self, score_integer):
+        eclass = self.evaluator.get_rank_class(score_integer)
+        return self.evaluator.class_to_string(eclass)
+
     def showdown(self):
-        print("Showdown not implemented")
+        # NOTE: to implement side pot decisions, need to implement win/tie situations on each side pot. Not done yet.
+        for a_player in players_dict.values():
+            if not a_player.folded:
+                score = self.evaluator.evaluate(self.community, a_player.hole_cards)
+                a_player.score = score
+        players_scores = dict()
+        for b_player in players_dict.values():
+            if not b_player.folded:
+                players_scores[b_player] = b_player.score
+        top_players_list = self.key_list_with_max_value(players_scores)
+        return self.winner_or_tiers(top_players_list)
+
+    def winner_or_tiers(self, top_players_list):
+        if len(top_players_list) == 1:
+            return self.winner(top_players_list)
+        else:
+            return self.tier(top_players_list)
+
+    def winner(self, top_players_list):
+        winner_player = top_players_list[0]
+        winner_score = winner_player.score
+        winning_rank_string = self.score_to_rank_string(winner_score)
+        print(f"Player {winner_player.name} wins the {self.pot} pot with {winning_rank_string}!")
+        for a_player in players_dict.values():
+            a_player.all_in_ed = False
+            a_player.can_act = True
+            a_player.folded = False
+            a_player.hole_cards = None
+            a_player.score = None
+        winner_player.stack += self.pot
+        self.pot = 0
+        self.previous_bet = 0
+        self.to_match = 0
+        self.community = None
         return "finished"
+
+    def tier(self, top_players_list):
+        print("A tying situation is not yet implemented.")
+        return "finished"
+
     
     def pre_flop(self, priority):
         player_index_to_act = priority
         global players_dict
+
+        for a_player in players_dict.values():
+            a_player.hole_cards = self.deck.draw(2)
+            pretty_hole_cards = Card.print_pretty_cards(a_player.hole_cards)
+            print(f"Player {a_player.name}'s hole cards are {pretty_hole_cards}.")
+
         small_blind_player = players_dict[player_index_to_act]
         self.set_small_blind(small_blind_player, self.small_blind)
-        # small_blind_action = input(f"Player {small_blind_player.name}, please bet the small blind {small_blind} (y/n).")
-        # if small_blind_action == 'y':
-        #     small_blind_player.small_blind(small_blind)
-        # elif small_blind_action == 'n':
-        #     small_blind_player.fold()
-        # else:
-        #     print("Input error. Try again.")
-        #     self.pre_flop(players, player_index_to_act, small_blind, big_blind)
 
         player_index_to_act = (player_index_to_act + 1) % (len(players_dict))
         big_blind_player = players_dict[player_index_to_act]
@@ -125,31 +199,44 @@ class Betting:
 
     def flop(self, priority):
         player_index_to_act = priority
+        self.community = self.deck.draw(3)
+        pretty_flop = Card.print_pretty_cards(self.community)
+        print(f"The flop is {pretty_flop}.")
+
         return self.normal_betting(player_index_to_act)
 
     def turn(self, priority):
         player_index_to_act = priority
+        turn = self.deck.draw(1)
+        pretty_turn = Card.print_pretty_card(turn)
+        print(f"The turn is {pretty_turn}.")
+        self.community.append(turn)
+        pretty_community = Card.print_pretty_cards(self.community)
+        print(f"The community is {pretty_community}.")
+
         return self.normal_betting(player_index_to_act)
 
     def river(self, priority):
         player_index_to_act = priority
+        river = self.deck.draw(1)
+        pretty_river = Card.print_pretty_card(river)
+        print(f"The river is {pretty_river}.")
+        self.community.append(river)
+        pretty_community = Card.print_pretty_cards(self.community)
+        print(f"The community is {pretty_community}.")
+
         return self.normal_betting(player_index_to_act)
 
     def normal_betting(self, player_index_to_act):
         global players_dict
         player_to_act = players_dict[player_index_to_act]
-        # player_index_after_last_to_act = player_index_to_act
-        # while player_index_to_act != player_index_after_last_to_act:
         while player_to_act.can_act:
-            # breakpoint()
-            # player_to_act = players_dict[player_index_to_act]
             call_amount = self.to_match - player_to_act.stake
             player_action = input(f"Player {player_to_act.name}, you have {call_amount} to call. ")
             if player_action == 'raise':
                 minimum_raise_total = max(2 * self.previous_bet, self.previous_bet + self.minimum_bet)
                 # note: the above is also = the min bet at flop/turn/river
                 min_add_raise = minimum_raise_total - player_to_act.stake
-                # breakpoint()
                 raise_add_amount = int(input(f"Raise an additional how many chips? (min = {min_add_raise}) > "))
                 if raise_add_amount >= min_add_raise:
                     self.upraise(player_to_act, raise_add_amount)
@@ -190,17 +277,23 @@ class Betting:
                 return key
 
     def pre_showdown_finish(self):
-        # print("pre-showdown finish not implemented")
-        for key in players_dict:
-            self.pot += players_dict[key].stake
+        for a_player in players_dict.values():
+            self.pot += a_player.stake
             print(f"The pot is {self.pot}.")
-            players_dict[key].stake = 0
+            a_player.stake = 0
         winner_player = players_dict[self.the_unfolded_player_key()]
         winner_player.stack += self.pot
         print(f"Player {winner_player.name} wins {self.pot}!")
+        for b_player in players_dict.values():
+            b_player.all_in_ed = False
+            b_player.can_act = True
+            b_player.folded = False
+            b_player.hole_cards = None
+            b_player.score = None
         self.pot = 0
         self.previous_bet = 0
         self.to_match = 0
+        self.community = None
         return "finished"
 
     def call(self, player, amount):
@@ -246,16 +339,12 @@ class Betting:
             print(f"Player {player.name} have staked big blind {amount}, and has a stack of {player.stack} left.")
             self.previous_bet = amount # not overridden; this is correct -- see if BB has < 1 BB
             # self.to_match = player.stake # overridden by normal_betting
-            # player.can_act = False # this is still True
 
     def set_small_blind(self, player, amount):
         if player.stack > amount: # implement = and < later
             player.stack -= amount
             player.stake += amount
             print(f"Player {player.name} have staked small blind {amount}, and has a stack of {player.stack} left.")
-            # self.previous_bet = amount
-            # self.to_match = player.stake
-            # player.can_act = False # this is still True
 
 class Player(Betting):
 
@@ -268,65 +357,12 @@ class Player(Betting):
         self.folded = False
         self.all_in_ed = False
         self.can_act = True
+        self.score = None
 
     def hole_cards(self):
         self.hole_cards = self.deck.draw(2)
 
-    # def call(self, amount):
-    #     if self.stack > amount:
-    #         self.stack -= amount
-    #         self.stake += amount
-    #
-    #         print(f"Player {self.name} have called {amount}, and has a stack of ")
-    #
-    # def upraise(self, amount):
-    #     pass
-    #
-    # def check(self):
-    #     pass
-    #
-    # def fold(self):
-    #     pass
-    #
-    # def all_in(self):
-    #     pass
-    #
-    # def big_blind(self):
-    #     self.call(amount)
-    #
-    # def small_blind(self, amount):
-    #     self.call(amount)
-
-
-
-
-
-# evaluator = Evaluator()
-
-
-# print(evaluator.evaluate(board, hand))
-
-# deck = Deck()
-# board = deck.draw(3)
-# p1hand = deck.draw(2)
-# p2hand = deck.draw(2)
-
-# pprint1 = Card.print_pretty_cards(board + p1hand)
-# pprint2 = Card.print_pretty_cards(board + p2hand)
-
-
-
-# p1score = evaluator.evaluate(board, p1hand)
-# p2score = evaluator.evaluate(board, p2hand)
-# p1class = evaluator.get_rank_class(p1score)
-# p2class = evaluator.get_rank_class(p2score)
-# p1class_string = evaluator.class_to_string(p1class)
-# p2class_string = evaluator.class_to_string(p2class)
-#
-# print(f"Player 1 has a {p1class_string} with rank {p1score}.")
-# print(f"Player 2 has a {p2class_string} with rank {p2score}.")
-
 a_table = Betting(1,2)
 a_game = Engine(a_table, 3)
 a_game.play()
-# print(list((k,v) for k,v in a_game.players.items()))
+
